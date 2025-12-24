@@ -5,8 +5,11 @@ from discord.ext import commands
 from discord import app_commands
 import random
 import asyncio
+import aiohttp
+import html
+import time
 
-# --- Blackjack Game View (Fair Rules) ---
+# --- Blackjack Game View ---
 class BlackjackView(discord.ui.View):
     def __init__(self, bot, author, player_data, bet):
         super().__init__(timeout=120)
@@ -47,7 +50,7 @@ class BlackjackView(discord.ui.View):
         
         file = None
         if result == "win" or result == "blackjack":
-            file = discord.File("cogs/win.gif", filename="win.gif")
+            # file = discord.File("cogs/win.gif", filename="win.gif") # Uncomment if you have the file
             if result == "win":
                 new_balance = self.player_data['balance'] + self.bet
                 title = "🎉 You Won! 🎉"
@@ -57,12 +60,10 @@ class BlackjackView(discord.ui.View):
                 title = "✨ BLACKJACK! ✨"
                 desc = f"You won **{int(self.bet * 2.5):,}** coins!"
         elif result == "push":
-            file = discord.File("cogs/tie.gif", filename="tie.gif")
             new_balance = self.player_data['balance']
             title = "🤝 Push 🤝"
             desc = "It's a tie! Your bet has been returned."
         else: # loss
-            file = discord.File("cogs/loss.gif", filename="loss.gif")
             new_balance = self.player_data['balance'] - self.bet
             title = "💔 You Lost 💔"
             desc = f"The dealer won. You lost **{self.bet:,}** coins."
@@ -74,11 +75,9 @@ class BlackjackView(discord.ui.View):
         embed.add_field(name="Dealer's Hand", value=f"{' '.join(map(str, self.dealer_hand))} (**{dealer_score}**)", inline=True)
         embed.set_footer(text=f"New Balance: {new_balance:,}")
 
-        attachments = [file] if file else []
-        if file:
-            embed.set_thumbnail(url=f"attachment://{file.filename}")
+        # if file: embed.set_thumbnail(url=f"attachment://{file.filename}")
         
-        await interaction.edit_original_response(embed=embed, view=None, attachments=attachments)
+        await interaction.edit_original_response(embed=embed, view=None) # attachments=[file] if file else []
         self.stop()
 
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.green)
@@ -113,7 +112,6 @@ class GamesCog(commands.Cog):
         self.bot = bot
 
     async def check_player_can_bet(self, interaction: discord.Interaction, player_data: dict, bet: int) -> bool:
-        """A helper function to check if a player can afford their bet."""
         if bet <= 0:
             await interaction.followup.send("❌ You must bet a positive amount of coins.", ephemeral=True)
             return False
@@ -126,213 +124,185 @@ class GamesCog(commands.Cog):
     async def on_ready(self):
         print(f'{self.__class__.__name__} cog has been loaded.')
 
-    @app_commands.command(name="slots", description="Play the slot machine for a chance to win big!")
-    @app_commands.describe(bet="The amount of coins you want to bet.")
+    # --- EXISTING GAMES (Slots, Coinflip, Roulette, RPS, Blackjack) ---
+    
+    @app_commands.command(name="slots", description="Play the slot machine!")
     async def slots(self, interaction: discord.Interaction, bet: int):
         await interaction.response.defer()
         player = await self.bot.db.get_user_data(interaction.user.id, interaction.guild.id)
-        if not await self.check_player_can_bet(interaction, player, bet):
-            return
+        if not await self.check_player_can_bet(interaction, player, bet): return
 
         emojis = ["🍒", "🍊", "🔔", "💎", "💰"] 
         reels = [random.choice(emojis) for _ in range(3)]
-        result_str = " | ".join(reels)
         
         payout = 0
         if reels[0] == reels[1] == reels[2]:
-            if reels[0] == "💰": payout = bet * 8
-            elif reels[0] == "💎": payout = bet * 7
-            elif reels[0] == "🔔": payout = bet * 6
-            else: payout = bet * 4
+            payout = bet * (8 if reels[0] == "💰" else 4)
         elif reels[0] == reels[1] or reels[1] == reels[2]:
             payout = int(bet * 1.5)
-        elif reels[0] == reels[2]:
-            payout = bet
-
+            
         new_balance = player['balance'] - bet + payout
         await self.bot.db.update_user_data(interaction.user.id, interaction.guild.id, {"balance": new_balance})
         
-        embed = discord.Embed(title="🎰 Slot Machine 🎰")
-        embed.set_author(name=f"{interaction.user.display_name}'s game")
-        embed.add_field(name="Result", value=f"**[ {result_str} ]**", inline=False)
-        
-        file = None
-        if payout > bet:
-            file = discord.File("cogs/win.gif", filename="win.gif")
-            embed.description = f"🎉 **YOU WON!** 🎉\nYou won **{payout:,}** coins!"
-            embed.color = discord.Color.green()
-        elif payout == bet:
-            file = discord.File("cogs/tie.gif", filename="tie.gif")
-            embed.description = f"🙌 **PUSH!** 🙌\nYou got your bet of **{bet:,}** back!"
-            embed.color = discord.Color.light_grey()
-        else:
-            file = discord.File("cogs/loss.gif", filename="loss.gif")
-            embed.description = f"💔 **You lost.** Better luck next time!"
-            embed.color = discord.Color.red()
-        
-        footer_text = f"New Balance: {new_balance:,} | Tip: Match three 💰 for the jackpot!"
-        embed.set_footer(text=footer_text)
-        
-        if file:
-            embed.set_thumbnail(url=f"attachment://{file.filename}")
-            await interaction.followup.send(embed=embed, file=file)
-        else:
-            await interaction.followup.send(embed=embed)
-    
+        embed = discord.Embed(title="🎰 Slot Machine", description=f"**[ {' | '.join(reels)} ]**", color=discord.Color.gold())
+        if payout > 0: embed.add_field(name="WINNER!", value=f"You won **{payout:,}** coins!")
+        else: embed.add_field(name="Lost", value="Better luck next time.")
+        embed.set_footer(text=f"New Balance: {new_balance:,}")
+        await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="coinflip", description="Bet on a 50/50 coin flip.")
-    @app_commands.choices(choice=[
-        app_commands.Choice(name="Heads", value="heads"),
-        app_commands.Choice(name="Tails", value="tails")
-    ])
+    @app_commands.command(name="coinflip", description="Bet on Heads or Tails.")
+    @app_commands.choices(choice=[app_commands.Choice(name="Heads", value="heads"), app_commands.Choice(name="Tails", value="tails")])
     async def coinflip(self, interaction: discord.Interaction, bet: int, choice: str):
         await interaction.response.defer()
         player = await self.bot.db.get_user_data(interaction.user.id, interaction.guild.id)
-        if not await self.check_player_can_bet(interaction, player, bet):
-            return
+        if not await self.check_player_can_bet(interaction, player, bet): return
 
         outcome = random.choice(["heads", "tails"])
         won = (choice.lower() == outcome)
+        new_balance = player['balance'] + bet if won else player['balance'] - bet
         
-        if won:
-            file = discord.File("cogs/win.gif", filename="win.gif")
-            new_balance = player['balance'] + bet
-            title = "🎉 You Won! 🎉"
-            color = discord.Color.green()
-            description = f"The coin landed on **{outcome.title()}**. You won **{bet*2:,}** coins!"
-        else:
-            file = discord.File("cogs/loss.gif", filename="loss.gif")
-            new_balance = player['balance'] - bet
-            title = "💔 You Lost 💔"
-            color = discord.Color.red()
-            description = f"The coin landed on **{outcome.title()}**. You lost **{bet:,}** coins."
-            
         await self.bot.db.update_user_data(interaction.user.id, interaction.guild.id, {"balance": new_balance})
-        embed = discord.Embed(title=title, description=description, color=color)
-        embed.set_thumbnail(url=f"attachment://{file.filename}")
-        embed.set_author(name=f"{interaction.user.display_name}'s coin flip")
-        embed.set_footer(text=f"New Balance: {new_balance:,} | Tip: This is a true 50/50 chance!")
-        await interaction.followup.send(embed=embed, file=file)
+        embed = discord.Embed(title="🪙 Coin Flip", description=f"The coin landed on **{outcome.title()}**!", color=discord.Color.green() if won else discord.Color.red())
+        embed.add_field(name="Result", value=f"You {'won' if won else 'lost'} **{bet if won else bet:,}** coins.")
+        await interaction.followup.send(embed=embed)
 
-
-    @app_commands.command(name="blackjack", description="Play a game of Blackjack against the bot.")
-    @app_commands.describe(bet="The amount of coins to bet.")
+    @app_commands.command(name="blackjack", description="Play Blackjack.")
     async def blackjack(self, interaction: discord.Interaction, bet: int):
         await interaction.response.defer()
         player = await self.bot.db.get_user_data(interaction.user.id, interaction.guild.id)
-        if not await self.check_player_can_bet(interaction, player, bet):
-            return
-
+        if not await self.check_player_can_bet(interaction, player, bet): return
         view = BlackjackView(self.bot, interaction.user, player, bet)
         player_score = view.calculate_hand_value(view.player_hand)
-        
         embed = discord.Embed(title="🃏 Blackjack", color=discord.Color.dark_green())
         embed.set_author(name=f"{interaction.user.display_name}'s game")
         embed.add_field(name="Your Hand", value=f"{' '.join(map(str, view.player_hand))}  (**{player_score}**)", inline=False)
         embed.add_field(name="Dealer's Hand", value=f"{view.dealer_hand[0]} ?", inline=False)
-        embed.set_footer(text="Tip: Try to get closer to 21 than the dealer without going over!")
         await interaction.followup.send(embed=embed, view=view)
-
         if player_score == 21:
-            await asyncio.sleep(1) # Give player a moment to see their blackjack
+            await asyncio.sleep(1)
             await view.handle_game_end(interaction, "blackjack")
 
-
-    @app_commands.command(name="roulette", description="Play a game of Roulette.")
-    @app_commands.describe(bet="The amount to bet.", space="The space to bet on (e.g., 'red', 'black', or a number 0-36).")
-    async def roulette(self, interaction: discord.Interaction, bet: int, space: str):
+    # --- NEW GAME 1: CRASH (Stock Market Style) ---
+    @app_commands.command(name="crash", description="Bet on a rising multiplier. Auto-cashout before it crashes!")
+    @app_commands.describe(bet="Coins to bet", auto_cashout="Target multiplier (e.g. 2.0)")
+    async def crash(self, interaction: discord.Interaction, bet: int, auto_cashout: float):
         await interaction.response.defer()
         player = await self.bot.db.get_user_data(interaction.user.id, interaction.guild.id)
-        if not await self.check_player_can_bet(interaction, player, bet):
-            return
         
-        space = space.lower()
-        red_numbers = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-        winning_number = random.randint(0, 36)
-        
-        payout = 0; won = False
-        if space.isdigit() and 0 <= int(space) <= 36:
-            if int(space) == winning_number:
-                payout = bet * 35; won = True
-        elif space == "red":
-            if winning_number in red_numbers:
-                payout = bet; won = True
-        elif space == "black":
-            if winning_number != 0 and winning_number not in red_numbers:
-                payout = bet; won = True
-        elif space == "even":
-            if winning_number != 0 and winning_number % 2 == 0:
-                payout = bet; won = True
-        elif space == "odd":
-            if winning_number % 2 != 0:
-                payout = bet; won = True
+        if not await self.check_player_can_bet(interaction, player, bet): return
+        if auto_cashout < 1.1:
+            return await interaction.followup.send("❌ Auto-cashout must be at least 1.1x", ephemeral=True)
+
+        # Crash Algorithm: Weighted random
+        # 3% chance of instant crash (1.0x)
+        if random.random() < 0.03:
+            crash_point = 1.00
         else:
-            await interaction.followup.send("❌ Invalid space. Please bet on 'red', 'black', 'even', 'odd', or a number between 0 and 36.", ephemeral=True); return
+            # Generate crash point (favors lower numbers)
+            crash_point = 0.99 * (1 / (1 - random.random()))
+            crash_point = max(1.0, crash_point)
+
+        won = auto_cashout <= crash_point
         
-        result_color = "Red" if winning_number in red_numbers else ("Green" if winning_number == 0 else "Black")
-        embed = discord.Embed(title="🎡 Roulette 🎡", description=f"The ball landed on **{winning_number} ({result_color})**", color=discord.Color.dark_magenta())
+        # Visuals
+        embed = discord.Embed(title="🚀 Crash", description="The rocket is taking off...", color=discord.Color.blue())
+        embed.add_field(name="Your Target", value=f"**{auto_cashout}x**", inline=True)
+        embed.add_field(name="Bet", value=f"{bet:,}", inline=True)
+        msg = await interaction.followup.send(embed=embed)
+
+        # Animation Loop (Fake the rise)
+        current_display = 1.0
+        while current_display < crash_point and current_display < auto_cashout + 0.5:
+            await asyncio.sleep(0.7)
+            # Increase display multiplier
+            increment = 0.1 + (current_display * 0.1) # Speeds up as it goes higher
+            current_display += increment
+            
+            if current_display >= crash_point: 
+                current_display = crash_point
+                break
+                
+            embed.description = f"🚀 **{current_display:.2f}x**"
+            try: await msg.edit(embed=embed)
+            except: break
         
+        # Final Result
         if won:
-            file = discord.File("cogs/win.gif", filename="win.gif")
-            new_balance = player['balance'] + payout
-            embed.add_field(name="🎉 You Won! 🎉", value=f"Your bet on **{space.title()}** won! You get **{payout:,}** coins!")
+            profit = int(bet * auto_cashout) - bet
+            new_balance = player['balance'] + profit
+            embed.title = "✅ SUCESSFUL CASHOUT"
+            embed.description = f"Crashed at **{crash_point:.2f}x**\nYou cashed out at **{auto_cashout:.2f}x**"
+            embed.color = discord.Color.green()
+            embed.add_field(name="Profit", value=f"+{profit:,} coins", inline=False)
         else:
-            file = discord.File("cogs/loss.gif", filename="loss.gif")
             new_balance = player['balance'] - bet
-            embed.add_field(name="💔 You Lost 💔", value=f"Your bet on **{space.title()}** lost. You lose **{bet:,}** coins.")
-            
+            embed.title = "💥 CRASHED!"
+            embed.description = f"Crashed at **{crash_point:.2f}x**\nYou needed **{auto_cashout:.2f}x**"
+            embed.color = discord.Color.red()
+            embed.add_field(name="Loss", value=f"-{bet:,} coins", inline=False)
+
+        embed.set_footer(text=f"New Balance: {new_balance:,}")
         await self.bot.db.update_user_data(interaction.user.id, interaction.guild.id, {"balance": new_balance})
-        embed.set_thumbnail(url=f"attachment://{file.filename}")
-        embed.set_footer(text=f"New Balance: {new_balance:,} | Tip: Betting on a number pays 35x!")
-        await interaction.followup.send(embed=embed, file=file)
+        await msg.edit(embed=embed)
 
-
-    @app_commands.command(name="rps", description="Play Rock, Paper, Scissors.")
-    @app_commands.choices(choice=[
-        app_commands.Choice(name="Rock ✊", value="rock"),
-        app_commands.Choice(name="Paper ✋", value="paper"),
-        app_commands.Choice(name="Scissors ✌️", value="scissors")
-    ])
-    async def rps(self, interaction: discord.Interaction, bet: int, choice: str):
+    # --- NEW GAME 2: TRIVIA ---
+    @app_commands.command(name="trivia", description="Answer a trivia question to win coins!")
+    async def trivia(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        player = await self.bot.db.get_user_data(interaction.user.id, interaction.guild.id)
-        if not await self.check_player_can_bet(interaction, player, bet):
-            return
         
-        bot_choice = random.choice(["rock", "paper", "scissors"])
+        # 1. Fetch Question from OpenTDB
+        url = "https://opentdb.com/api.php?amount=1&type=multiple"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return await interaction.followup.send("❌ Could not fetch a question. Try again later.")
+                data = await resp.json()
+        
+        if data['response_code'] != 0:
+            return await interaction.followup.send("❌ Trivia API error.")
 
-        winner = None 
-        if choice == bot_choice: winner = None
-        elif (choice == "rock" and bot_choice == "scissors") or \
-             (choice == "paper" and bot_choice == "rock") or \
-             (choice == "scissors" and bot_choice == "paper"):
-            winner = True
-        else: winner = False
+        question_data = data['results'][0]
+        question = html.unescape(question_data['question'])
+        correct_answer = html.unescape(question_data['correct_answer'])
+        wrong_answers = [html.unescape(a) for a in question_data['incorrect_answers']]
+        
+        # 2. Shuffle answers
+        all_answers = wrong_answers + [correct_answer]
+        random.shuffle(all_answers)
+        
+        # Map letters to answers
+        options_map = {0: 'A', 1: 'B', 2: 'C', 3: 'D'}
+        answer_text = ""
+        correct_letter = ""
+        
+        for i, ans in enumerate(all_answers):
+            letter = options_map[i]
+            answer_text += f"**{letter})** {ans}\n"
+            if ans == correct_answer:
+                correct_letter = letter
 
-        file = None
-        if winner is True:
-            file = discord.File("cogs/win.gif", filename="win.gif")
-            new_balance = player['balance'] + bet
-            result_text = f"You won! You chose **{choice.title()}** and I chose **{bot_choice.title()}**."
-        elif winner is False:
-            file = discord.File("cogs/loss.gif", filename="loss.gif")
-            new_balance = player['balance'] - bet
-            result_text = f"You lost! You chose **{choice.title()}** and I chose **{bot_choice.title()}**."
-        else: # Tie
-            file = discord.File("cogs/tie.gif", filename="tie.gif")
-            new_balance = player['balance']
-            result_text = f"It's a tie! We both chose **{choice.title()}**."
+        embed = discord.Embed(title="🧠 Trivia Time!", description=f"**Category:** {question_data['category']}\n**Difficulty:** {question_data['difficulty'].title()}\n\n**{question}**\n\n{answer_text}", color=discord.Color.purple())
+        embed.set_footer(text="Type A, B, C, or D in the chat! First correct answer wins 250 coins.")
+        await interaction.followup.send(embed=embed)
+
+        # 3. Wait for Answer
+        def check(m):
+            return m.channel == interaction.channel and not m.author.bot and m.content.upper() in ['A', 'B', 'C', 'D']
+
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=30.0)
             
-        await self.bot.db.update_user_data(interaction.user.id, interaction.guild.id, {"balance": new_balance})
-        embed = discord.Embed(title="✊ Rock, Paper, Scissors ✌️", description=result_text, color=discord.Color.orange())
-        embed.set_footer(text=f"New Balance: {new_balance:,} | Tip: Paper beats Rock, Rock beats Scissors, Scissors beats Paper.")
-
-        if file:
-            embed.set_thumbnail(url=f"attachment://{file.filename}")
-            await interaction.followup.send(embed=embed, file=file)
-        else:
-            await interaction.followup.send(embed=embed)
-
+            if msg.content.upper() == correct_letter:
+                reward = 250
+                winner_data = await self.bot.db.get_user_data(msg.author.id, interaction.guild.id)
+                await self.bot.db.update_user_data(msg.author.id, interaction.guild.id, {"balance": winner_data['balance'] + reward})
+                
+                await msg.reply(f"🎉 **Correct!** {msg.author.mention} won **{reward}** coins! The answer was **{correct_answer}**.")
+            else:
+                await msg.reply(f"❌ **Wrong!** The correct answer was **{correct_letter}) {correct_answer}**.")
+                
+        except asyncio.TimeoutError:
+            await interaction.followup.send(f"⏰ Time's up! The correct answer was **{correct_letter}) {correct_answer}**.")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(GamesCog(bot))

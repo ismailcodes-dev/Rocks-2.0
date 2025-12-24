@@ -3,36 +3,51 @@ from discord.ext import commands
 import os
 from dotenv import load_dotenv
 import asyncio
-import database # Import the database file
+import database
+import logging
+from logging.handlers import RotatingFileHandler
 
-# --- SETUP ---
+# --- SETUP LOGGING ---
+# This creates a log file that rotates (overwrites old logs) so it doesn't eat your hard drive.
+logger = logging.getLogger('bot')
+logger.setLevel(logging.INFO)
+
+# File Handler (Saves to bot.log)
+handler = RotatingFileHandler('bot.log', maxBytes=5*1024*1024, backupCount=2, encoding='utf-8')
+handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+logger.addHandler(handler)
+
+# Console Handler (Prints to terminal)
+console = logging.StreamHandler()
+console.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s: %(message)s'))
+logger.addHandler(console)
+
+# --- CONFIGURATION ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # --- BOT INITIALIZATION ---
-# We create a custom bot class to attach our database manager to it.
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = True
-        # FIX 1: Add the voice_states intent for the streaming cog to work
         intents.voice_states = True 
         
-        super().__init__(command_prefix="/", intents=intents)
-        # Attach the database manager to the bot instance
+        super().__init__(command_prefix="/", intents=intents, help_command=None) # We disable default help
         self.db = database.DatabaseManager(self)
 
     async def on_ready(self):
-        """Event that runs when the bot is online and all cogs are loaded."""
-        print(f'Logged in as {self.user.name}')
-        print(f'Discord.py Version: {discord.__version__}')
+        """Event that runs when the bot is online."""
+        await self.db.init_db()
+        logger.info(f'Logged in as {self.user.name} (ID: {self.user.id})')
+        logger.info(f'Discord.py Version: {discord.__version__}')
+        
         try:
-            # Sync commands after all cogs are loaded
             synced = await self.tree.sync()
-            print(f"Synced {len(synced)} command(s)")
+            logger.info(f"Synced {len(synced)} command(s)")
         except Exception as e:
-            print(f"Failed to sync commands: {e}")
+            logger.error(f"Failed to sync commands: {e}")
 
 bot = MyBot()
 
@@ -42,23 +57,23 @@ async def main():
     cog_folder = "cogs"
     
     async with bot:
-        # Load all .py files from the cogs folder
         for filename in os.listdir(cog_folder):
-            # FIX 2: Add a check to ignore the __init__.py file
             if filename.endswith(".py") and filename != "__init__.py":
                 try:
                     await bot.load_extension(f"{cog_folder}.{filename[:-3]}")
-                    print(f"Loaded cog: {filename}")
+                    logger.info(f"Loaded cog: {filename}")
                 except Exception as e:
-                    print(f"Failed to load cog {filename}: {e}")
+                    logger.error(f"Failed to load cog {filename}: {e}", exc_info=True)
         
-        # Start the bot
         await bot.start(BOT_TOKEN)
 
 # --- RUN THE BOT ---
 if __name__ == "__main__":
     if BOT_TOKEN is None:
-        print("Error: BOT_TOKEN environment variable not found.")
-        print("Please create a .env file and add your bot token.")
+        logger.critical("Error: BOT_TOKEN environment variable not found.")
     else:
-        asyncio.run(main())
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            # Handle Ctrl+C gracefully
+            pass
