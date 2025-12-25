@@ -3,7 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import time
 import random
-from .channel_config import get_guild_settings, get_member_perks, PERKS # Import PERKS dictionary
+from .channel_config import get_guild_setting, get_member_perks, PERKS # Updated import
 
 class EconomyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -24,7 +24,8 @@ class EconomyCog(commands.Cog):
         
         try:
             player = await self.bot.db.get_user_data(user_id, guild_id)
-            perks = get_member_perks(message.author)
+            # Updated: await the async function and pass self.bot
+            perks = await get_member_perks(self.bot, message.author)
             data_to_update = {}
             
             if current_time - player['last_coin_claim'] > 25:
@@ -52,25 +53,37 @@ class EconomyCog(commands.Cog):
                     data_to_update['xp'] = new_xp
                     data_to_update['level'] = current_level
 
-                    guild_settings = get_guild_settings(message.guild.id)
-                    level_up_channel_id = guild_settings.get("LEVEL_UP_CHANNEL_ID")
-                    target_channel = self.bot.get_channel(level_up_channel_id) or message.channel
+                    # Updated: Fetch specific setting asynchronously
+                    level_up_channel_id = await get_guild_setting(self.bot, message.guild.id, "LEVEL_UP_CHANNEL_ID")
+                    
+                    target_channel = None
+                    if level_up_channel_id:
+                        target_channel = self.bot.get_channel(int(level_up_channel_id))
+                    
+                    if not target_channel:
+                        target_channel = message.channel
+                        
                     await target_channel.send(f"🎉 Congratulations {message.author.mention}, you have reached **Level {current_level}**!")
                     
-                    # --- UPDATED: Automatic Role Assignment with Detailed Perk DMs ---
+                    # --- UPDATED: Fetch Role IDs from DB ---
+                    elite_id = await get_guild_setting(self.bot, message.guild.id, "ELITE_ROLE_ID")
+                    master_id = await get_guild_setting(self.bot, message.guild.id, "MASTER_ROLE_ID")
+                    supreme_id = await get_guild_setting(self.bot, message.guild.id, "SUPREME_ROLE_ID")
+
                     roles_to_assign = {
-                        50: (guild_settings.get("ELITE_ROLE_ID"), "elite"),
-                        75: (guild_settings.get("MASTER_ROLE_ID"), "master"),
-                        100: (guild_settings.get("SUPREME_ROLE_ID"), "supreme")
+                        50: (elite_id, "elite"),
+                        75: (master_id, "master"),
+                        100: (supreme_id, "supreme")
                     }
+                    
                     for level_req, (role_id, perk_key) in roles_to_assign.items():
                         if current_level >= level_req and role_id:
-                            role = message.guild.get_role(role_id)
+                            role = message.guild.get_role(int(role_id))
                             if role and role not in message.author.roles:
                                 try:
                                     await message.author.add_roles(role, reason=f"Reached Level {level_req}")
                                     
-                                    # --- NEW: Send a detailed DM with an embed ---
+                                    # --- Send Detailed DM ---
                                     perk_info = PERKS[perk_key]
                                     embed = discord.Embed(
                                         title="🎉 Rank Up!",
@@ -128,7 +141,8 @@ class EconomyCog(commands.Cog):
         await interaction.response.defer(ephemeral=False)
         
         player = await self.bot.db.get_user_data(target_user.id, interaction.guild.id)
-        perks = get_member_perks(target_user)
+        # Updated: await the async function
+        perks = await get_member_perks(self.bot, target_user)
         
         level, xp, balance, streak = player['level'], player['xp'], player['balance'], player['daily_streak']
         xp_needed = 100 + (level * 50)
@@ -158,7 +172,8 @@ class EconomyCog(commands.Cog):
             await interaction.followup.send("❌ You cannot send coins to yourself or a bot.", ephemeral=True); return
 
         sender_data = await self.bot.db.get_user_data(interaction.user.id, interaction.guild.id)
-        sender_perks = get_member_perks(interaction.user)
+        # Updated: await the async function
+        sender_perks = await get_member_perks(self.bot, interaction.user)
         
         if amount > sender_perks['pay_limit']:
             await interaction.followup.send(f"❌ Your rank's pay limit is **{sender_perks['pay_limit']:,}** coins.", ephemeral=True); return
@@ -177,7 +192,8 @@ class EconomyCog(commands.Cog):
     async def droprates(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=False)
         player = await self.bot.db.get_user_data(interaction.user.id, interaction.guild.id)
-        perks = get_member_perks(interaction.user)
+        # Updated: await the async function
+        perks = await get_member_perks(self.bot, interaction.user)
         embed = discord.Embed(title="💧 Your Drop Rates", description=f"Your rewards are based on your current rank.", color=discord.Color.teal())
         embed.add_field(name="💰 Coin Multiplier", value=f"**{perks['multiplier']:.1f}x**", inline=True)
         embed.add_field(name="📈 XP Multiplier", value=f"**{perks['multiplier']:.1f}x**", inline=True)
@@ -199,7 +215,8 @@ class EconomyCog(commands.Cog):
         for i, user_data in enumerate(top_users, 1):
             member = interaction.guild.get_member(user_data['user_id'])
             if member:
-                perks = get_member_perks(member)
+                # Updated: await the async function
+                perks = await get_member_perks(self.bot, member)
                 user_name = f"{perks['flair']} {member.mention}"
             else:
                 user_name = f"*User Left (ID: {user_data['user_id']})*"
@@ -212,4 +229,3 @@ class EconomyCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(EconomyCog(bot))
-

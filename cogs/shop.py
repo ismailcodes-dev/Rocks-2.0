@@ -1,9 +1,7 @@
-# cogs/shop.py
-
 import discord
 from discord.ext import commands
 from discord import app_commands, ui
-from .channel_config import get_guild_settings, get_member_perks
+from .channel_config import get_member_perks, get_guild_setting
 import math
 import time
 import datetime
@@ -79,13 +77,11 @@ class PurchaseView(ui.View):
                 await interaction.followup.send("✅ **Purchase complete!** I've sent the receipt and download link to your DMs.", ephemeral=True)
             except discord.Forbidden:
                 await interaction.followup.send("⚠️ **Purchase Failed.** I couldn't send you a DM. Please enable DMs and try again.", ephemeral=True)
-                # (Ideally, we would refund here, but for simplicity in this snippet, we assume DMs work or user fixes it)
 
-            # Log to channel if configured
-            guild_settings = get_guild_settings(interaction.guild.id)
-            log_channel_id = guild_settings.get("PURCHASE_LOG_CHANNEL_ID")
+            # Log to channel if configured (Fetching from DB now)
+            log_channel_id = await get_guild_setting(self.bot, interaction.guild.id, "PURCHASE_LOG_CHANNEL_ID")
             if log_channel_id:
-                log_channel = self.bot.get_channel(log_channel_id)
+                log_channel = self.bot.get_channel(int(log_channel_id))
                 if log_channel:
                     await log_channel.send(f"🛒 **{interaction.user.name}** bought **{db_item['item_name']}** for {self.final_price} coins.")
 
@@ -108,12 +104,9 @@ class CategorySelect(ui.Select):
         await interaction.response.defer()
         
         if selected == "all":
-            # If "All Categories" is selected, behave like the "All Items" tab
             view.current_items = await view.bot.db.get_all_items(view.guild_id)
             view.current_tab = "all_items"
         else:
-            # Filter all items by the selected category
-            # (Fetching all and filtering in python is okay for <1000 items)
             all_items = await view.bot.db.get_all_items(view.guild_id)
             view.current_items = [item for item in all_items if item['category'] == selected]
             view.current_tab = "filtered"
@@ -133,7 +126,6 @@ class ShopView(ui.View):
         self.selected_index = 0
         self.items_in_view = 10
         
-        # Add the Category Select Menu
         if categories:
             self.add_item(CategorySelect(categories))
 
@@ -143,24 +135,14 @@ class ShopView(ui.View):
             return False
         return True
 
-    # --- Updated build_embed to include Visual Flare ---
     async def build_embed_and_components(self):
         guild = self.bot.get_guild(self.guild_id)
         embed = discord.Embed(title=f"🛍️ {guild.name} Marketplace", color=discord.Color.from_str("#5865F2"))
         
-        # Reset buttons
         self.clear_items()
         self.add_item(self.featured_button)
         self.add_item(self.new_button)
         self.add_item(self.all_items_button)
-        # Re-add category select if it was there (it's lost in clear_items so we check children of old view? No, we just need to preserve it)
-        # Actually, clear_items removes EVERYTHING. We need to re-add the category select.
-        # Limitation: We need to pass categories around or store them. 
-        # Fix: We will rely on the fact that we added it in __init__. 
-        # But clear_items() wipes it. We need to keep a reference to it.
-        # Let's handle this in the update_view logic instead of full rebuild, or simpler:
-        # Just don't add it in __init__? No, we need it.
-        # Hack: We will store the select menu in self.category_select
         
         content_description = ""
         thumbnail_url = "https://placehold.co/900x300/2b2d31/ffffff?text=Creator+Marketplace&font=raleway"
@@ -182,21 +164,16 @@ class ShopView(ui.View):
             if self.current_items:
                 start = max(0, self.selected_index - math.floor(self.items_in_view / 2))
                 end = min(len(self.current_items), start + self.items_in_view)
-                start = max(0, end - self.items_in_view) # Adjust if near end
+                start = max(0, end - self.items_in_view)
                 
                 list_str = ""
                 for i in range(start, end):
                     item = self.current_items[i]
                     prefix = "➤" if i == self.selected_index else "•"
                     
-                    # --- VISUAL FLARE LOGIC ---
                     badges = ""
-                    # 🆕 if uploaded in last 3 days (259200 seconds)
-                    if time.time() - item.get('upload_timestamp', 0) < 259200:
-                        badges += "🆕 "
-                    # 🔥 if purchased more than 10 times
-                    if item.get('purchase_count', 0) > 10:
-                        badges += "🔥 "
+                    if time.time() - item.get('upload_timestamp', 0) < 259200: badges += "🆕 "
+                    if item.get('purchase_count', 0) > 10: badges += "🔥 "
                     
                     list_str += f"{prefix} **{item['item_name']}** {badges}• `{item.get('price', 0):,} 🪙`\n"
                     
@@ -217,7 +194,7 @@ class ShopView(ui.View):
         return embed
 
     async def update_view(self, interaction: discord.Interaction):
-        # Before building, we need to save the Category Select if it exists
+        # Preserve category select
         cat_select = None
         for child in self.children:
             if isinstance(child, CategorySelect):
@@ -226,7 +203,6 @@ class ShopView(ui.View):
         
         embed = await self.build_embed_and_components()
         
-        # Re-add the category select if we found it
         if cat_select:
             self.add_item(cat_select)
             
@@ -248,7 +224,6 @@ class ShopView(ui.View):
         self.all_items_button.style = discord.ButtonStyle.primary if tab_name == "all_items" else discord.ButtonStyle.secondary
         await self.update_view(interaction)
 
-    # --- Button Callbacks ---
     @ui.button(label="⭐ Featured", style=discord.ButtonStyle.primary, custom_id="featured_tab", row=0)
     async def featured_button(self, i: discord.Interaction, b: ui.Button):
         await i.response.defer()
@@ -285,7 +260,6 @@ class ShopView(ui.View):
         await self.show_item_details(interaction, item_data['item_id'])
 
     async def on_interaction(self, interaction: discord.Interaction):
-        # Quick view handler for Featured item button (dynamic ID)
         if interaction.data.get("custom_id", "").startswith("quick_view_"):
             item_id = int(interaction.data["custom_id"].split("_")[2])
             await self.show_item_details(interaction, item_id)
@@ -296,7 +270,8 @@ class ShopView(ui.View):
         if not item: return await interaction.followup.send("❌ This item could not be found.", ephemeral=True)
         
         creator = await self.bot.fetch_user(item['creator_id'])
-        perks = get_member_perks(interaction.user)
+        # Updated: Async call to get perks
+        perks = await get_member_perks(self.bot, interaction.user)
         final_price = int(item['price'] * (1 - perks['shop_discount']))
 
         embed = discord.Embed(title=item['item_name'], color=discord.Color.from_str("#5865F2"))
@@ -325,17 +300,16 @@ class ShopCog(commands.Cog):
 
     @app_commands.command(name="shop", description="Open the interactive marketplace.")
     async def shop(self, interaction: discord.Interaction):
-        guild_settings = get_guild_settings(interaction.guild.id)
-        shop_channel_id = guild_settings.get("SHOP_CHANNEL_ID")
+        # Updated: Async call to get setting
+        shop_channel_id = await get_guild_setting(self.bot, interaction.guild.id, "SHOP_CHANNEL_ID")
         
-        if shop_channel_id and interaction.channel.id != shop_channel_id:
-            shop_channel = self.bot.get_channel(shop_channel_id)
+        if shop_channel_id and interaction.channel.id != int(shop_channel_id):
+            shop_channel = self.bot.get_channel(int(shop_channel_id))
             await interaction.response.send_message(f"❌ The shop can only be used in {shop_channel.mention if shop_channel else 'a missing channel'}.", ephemeral=True)
             return
             
         await interaction.response.defer()
         
-        # Fetch Categories for the Dropdown
         all_items = await self.bot.db.get_all_items(interaction.guild.id)
         categories = set(item['category'] for item in all_items)
         
@@ -344,14 +318,12 @@ class ShopCog(commands.Cog):
 
     @app_commands.command(name="search", description="Search for an item in the shop.")
     async def search(self, interaction: discord.Interaction, query: str):
-        # (Search logic kept simple for brevity, using existing DB search)
         await interaction.response.defer(ephemeral=True)
         if len(query) < 3: return await interaction.followup.send("Please enter at least 3 characters.", ephemeral=True)
         
         results = await self.bot.db.search_items(interaction.guild.id, query)
         if not results: return await interaction.followup.send(f"No items found matching `{query}`.", ephemeral=True)
         
-        # Reuse PurchaseView logic via a simple Select (simplified for this snippet)
         embed = discord.Embed(title=f"🔎 Search Results for `{query}`", description=f"Found **{len(results)}** item(s). Use `/shop` to browse properly.", color=discord.Color.blue())
         for item in results[:5]:
             embed.add_field(name=item['item_name'], value=f"{item['price']:,} coins", inline=False)
